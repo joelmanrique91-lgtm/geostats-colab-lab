@@ -1,0 +1,7 @@
+numpy
+pandas
+matplotlib
+scipy
+scikit-learn
+scikit-gstat
+pykrige

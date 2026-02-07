@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime
@@ -15,6 +14,7 @@ from .kriging import ordinary_kriging_2d
 from .preprocess import load_and_preprocess
 from .validation import simple_cross_validation
 from .variography import experimental_variogram_2d, fit_variogram_model, plot_variogram, save_variogram_model
+from geostats_pipeline.config import load_config
 
 
 def _setup_logging(log_dir: str) -> str:
@@ -29,11 +29,6 @@ def _setup_logging(log_dir: str) -> str:
     return log_path
 
 
-def _load_config(path: str) -> Dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def run_pipeline(config_path: str) -> None:
     import importlib.util
 
@@ -42,14 +37,14 @@ def run_pipeline(config_path: str) -> None:
             "No se encontro geostatspy. Activá .venv antes de correr el pipeline.\n"
             "Windows PowerShell:\n"
             "  .\\.venv\\Scripts\\activate\n"
-            "  python -m src.pipeline config/project.json\n"
+            "  python -m src.pipeline configs/config.yml\n"
             "macOS/Linux:\n"
             "  source .venv/bin/activate\n"
-            "  python -m src.pipeline config/project.json"
+            "  python -m src.pipeline configs/config.yml"
         )
         raise SystemExit(msg)
 
-    cfg = _load_config(config_path)
+    cfg = load_config(config_path)
 
     run_paths = create_run_dir("outputs")
     log_path = _setup_logging(str(run_paths.logs))
@@ -128,5 +123,5 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: python -m src.pipeline config/project.json")
+        raise SystemExit("Usage: python -m src.pipeline configs/config.yml")
     run_pipeline(sys.argv[1])

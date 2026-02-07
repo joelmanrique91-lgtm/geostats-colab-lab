@@ -5,5 +5,4 @@ scipy
 scikit-learn
 scikit-gstat
 pykrige
-
 pyyaml

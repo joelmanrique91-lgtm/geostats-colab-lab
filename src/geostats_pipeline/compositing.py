@@ -6,22 +6,15 @@ from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
-import yaml
-
 logger = logging.getLogger(__name__)
-
-
-def load_config(path: str) -> Dict:
-    """Carga un archivo YAML de configuración."""
-    with open(path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
 
 
 def _resolve_value_columns(df: pd.DataFrame, value_cols: Iterable[str] | None) -> List[str]:
     if value_cols:
         return [col for col in value_cols if col in df.columns]
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    return numeric_cols
+    if "value" in df.columns:
+        return ["value"]
+    return df.select_dtypes(include=[np.number]).columns.tolist()
 
 
 def _composite_group(
@@ -129,9 +122,9 @@ def composite_by_length(df: pd.DataFrame, config: Dict, output_dir: str = "outpu
     """
 
     comp_cfg = config.get("compositing", {}) if "compositing" in config else config
-    bheid_col = comp_cfg.get("bheid_col", "BHID")
-    from_col = comp_cfg.get("from_col", "FROM")
-    to_col = comp_cfg.get("to_col", "TO")
+    bheid_col = comp_cfg.get("bheid_col", "hole_id")
+    from_col = comp_cfg.get("from_col", "from")
+    to_col = comp_cfg.get("to_col", "to")
     target_length = float(comp_cfg.get("target_length", 1.0))
     min_length = float(comp_cfg.get("min_length", 0.5 * target_length))
     value_cols = _resolve_value_columns(df, comp_cfg.get("value_cols"))

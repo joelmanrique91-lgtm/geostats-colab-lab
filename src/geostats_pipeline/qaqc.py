@@ -29,6 +29,32 @@ class QAQCSummary:
         }
 
 
+def basic_qaqc(df: pd.DataFrame, value_col: str, duplicate_strategy: str = "drop") -> pd.DataFrame:
+    work = df.copy()
+    if duplicate_strategy not in {"drop", "keep"}:
+        raise ValueError("duplicate_strategy must be 'drop' or 'keep'")
+    if duplicate_strategy == "drop":
+        work = work.drop_duplicates()
+    if value_col in work.columns:
+        work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+    return work
+
+
+def outlier_report(df: pd.DataFrame, value_col: str, zscore: float = 4.0) -> pd.DataFrame:
+    if value_col not in df.columns:
+        return pd.DataFrame()
+    values = pd.to_numeric(df[value_col], errors="coerce")
+    mean = values.mean()
+    std = values.std(ddof=1)
+    if std == 0 or values.isna().all():
+        return pd.DataFrame()
+    z = (values - mean) / std
+    mask = z.abs() > zscore
+    out = df.loc[mask, [value_col]].copy()
+    out["zscore"] = z[mask]
+    return out
+
+
 def _missing_columns(df: pd.DataFrame, cols: Iterable[str]) -> List[str]:
     return [col for col in cols if col not in df.columns]
 

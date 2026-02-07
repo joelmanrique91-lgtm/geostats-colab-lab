@@ -6,20 +6,14 @@ from typing import Dict, Iterable, List
 
 import numpy as np
 import pandas as pd
-import yaml
-
 logger = logging.getLogger(__name__)
-
-
-def load_config(path: str) -> Dict:
-    """Carga un archivo YAML de configuración."""
-    with open(path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
 
 
 def _resolve_value_columns(df: pd.DataFrame, value_cols: Iterable[str] | None) -> List[str]:
     if value_cols:
         return [col for col in value_cols if col in df.columns]
+    if "value" in df.columns:
+        return ["value"]
     return df.select_dtypes(include=[np.number]).columns.tolist()
 
 
@@ -50,9 +44,9 @@ def cell_declustering(df: pd.DataFrame, config: Dict, output_dir: str = "outputs
     """
 
     declust_cfg = config.get("declustering", {}) if "declustering" in config else config
-    x_col = declust_cfg.get("x_col", "X")
-    y_col = declust_cfg.get("y_col", "Y")
-    z_col = declust_cfg.get("z_col", "Z")
+    x_col = declust_cfg.get("x_col", "x")
+    y_col = declust_cfg.get("y_col", "y")
+    z_col = declust_cfg.get("z_col", "z")
     cell_cfg = declust_cfg.get("cell_size", {})
     dx = float(cell_cfg.get("x", 50.0))
     dy = float(cell_cfg.get("y", 50.0))

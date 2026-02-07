@@ -1,258 +1,343 @@
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from eda import basic_stats, plot_hist, plot_qq, plot_xy_scatter
-from grid import export_grid_to_csv, grid_from_extents, make_grid_dataframe
-from kriging import ordinary_kriging_2d
-from preprocess import load_and_preprocess
-from validation import simple_cross_validation
-from variography import (
-    experimental_variogram_2d,
-    fit_variogram_model,
-    plot_variogram,
-    save_variogram_model,
+from .anisotropy import anisotropy_sweep
+from .block_model import BlockDiscretization, build_block_grid, discretize_blocks, grid_from_extents
+from .config import load_config
+from .declustering import cell_declustering
+from .eda import basic_stats, plot_histogram, plot_xy_scatter
+from .io import load_data, standardize_columns
+from .qaqc import basic_qaqc, outlier_report
+from .reporting import RunPaths, create_run_dir, save_figure, save_table, write_manifest
+from .support import resolve_support
+from .validation import (
+    CVResult,
+    compute_cv_metrics,
+    kriging_cross_validation,
+    plot_swath_panels,
 )
-
-from .core import ensure_output_dirs
-
-
-def _load_data(cfg: Dict) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str | None]]:
-    return load_and_preprocess(cfg)
+from .variography import experimental_variogram, fit_variogram_model, plot_variogram
+from .kriging import SearchParameters, ordinary_kriging
 
 
-def _grid_from_config(df: pd.DataFrame, cfg: Dict) -> Tuple[Dict[str, float], pd.DataFrame]:
-    grid_cfg = cfg.get("grid", {})
-    if grid_cfg.get("auto_from_data", True):
-        grid_spec = grid_from_extents(
+def _prepare_data(config: Dict[str, object]) -> Tuple[pd.DataFrame, Dict[str, object]]:
+    raw_df, metadata = load_data(config)
+    df = standardize_columns(raw_df, config)
+
+    qaqc_cfg = config["qaqc"]
+    df = basic_qaqc(df, "value", duplicate_strategy=qaqc_cfg["duplicate_strategy"])
+    return df, metadata
+
+
+def _resolve_variogram_model(df: pd.DataFrame, config: Dict[str, object], run_paths: RunPaths) -> Dict[str, float]:
+    var_cfg = config["variography"]
+    exp = experimental_variogram(
+        df,
+        "x",
+        "y",
+        "z",
+        "value",
+        n_lags=var_cfg["n_lags"],
+        lag_size=float(var_cfg["lag_size"]),
+        max_pairs=int(var_cfg["max_pairs"]),
+    )
+    sill = float(df["value"].var(ddof=1)) if var_cfg["initial_params"]["sill"] is None else float(
+        var_cfg["initial_params"]["sill"]
+    )
+    rng = float(var_cfg["lag_size"] * var_cfg["n_lags"]) if var_cfg["initial_params"]["range"] is None else float(
+        var_cfg["initial_params"]["range"]
+    )
+    nugget = float(var_cfg["initial_params"]["nugget"])
+    model = fit_variogram_model(exp, var_cfg["model_type"], sill=sill, rng=rng, nugget=nugget)
+    plot_variogram(exp, model, str(run_paths.figure_path("variogram.png")))
+    model_path = run_paths.model_path("variogram_model.json")
+    model_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+    return model
+
+
+def _build_search_params(config: Dict[str, object]) -> SearchParameters:
+    neigh = config["kriging"]["neighborhood"]
+    return SearchParameters(
+        ranges=(float(neigh["ranges"]["major"]), float(neigh["ranges"]["minor"]), float(neigh["ranges"]["vertical"])),
+        angles=(float(neigh["angles"]["azimuth"]), float(neigh["angles"]["dip"]), float(neigh["angles"]["rake"])),
+        min_samples=int(neigh["min_samples"]),
+        max_samples=int(neigh["max_samples"]),
+        max_per_drillhole=neigh["max_per_hole"],
+        octants=int(neigh["octants"]),
+        condition_max=float(neigh["condition_max"]),
+        drillhole_col="hole_id" if config["data"].get("hole_id_col") else None,
+    )
+
+
+def run_setup_check(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, metadata = _prepare_data(config)
+    summary = {
+        "rows": int(df.shape[0]),
+        "columns": int(df.shape[1]),
+        "columns_list": list(df.columns),
+    }
+    save_table(pd.DataFrame([summary]), run_paths, "setup_check_summary.csv", index=False)
+    save_table(df.head(20), run_paths, "setup_check_head.csv", index=False)
+    return {"summary": summary, "metadata": metadata}
+
+
+def run_data_qaqc(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    outlier_cfg = config["qaqc"]["outlier"]
+    outliers = outlier_report(df, "value", zscore=float(outlier_cfg["zscore"])) if outlier_cfg["enabled"] else pd.DataFrame()
+    if not outliers.empty:
+        save_table(outliers, run_paths, "qaqc_outliers.csv", index=False)
+
+    stats = basic_stats(df["value"])
+    save_table(pd.DataFrame([stats]), run_paths, "qaqc_basic_stats.csv", index=False)
+    save_table(df.isna().sum().to_frame("missing").reset_index(), run_paths, "qaqc_missing.csv", index=False)
+    plot_histogram(df["value"], str(run_paths.figure_path("qaqc_histogram.png")), title="Histogram")
+    return {"stats": stats}
+
+
+def run_compositing_declustering(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    df, support_mode = resolve_support(df, config)
+    result = {"support_mode": support_mode}
+
+    if support_mode in {"interval", "pseudo-interval"} and config["compositing"]["enabled"]:
+        from .compositing import composite_by_length
+
+        comp = composite_by_length(df, config, output_dir=str(run_paths.base))
+        df = comp.rename(columns={"from": "from", "to": "to"}).copy()
+        result["composites"] = int(len(comp))
+    else:
+        result["composites"] = 0
+
+    if config["declustering"]["enabled"]:
+        declust = cell_declustering(df, config, output_dir=str(run_paths.base))
+        df = declust.copy()
+        result["declustering"] = True
+    else:
+        result["declustering"] = False
+
+    save_table(df, run_paths, "compositing_declustering_samples.csv", index=False)
+    stats_naive = basic_stats(df["value"])
+    stats_weighted = (
+        basic_stats(df["value"], df["declust_weight"]) if "declust_weight" in df.columns else {}
+    )
+    save_table(
+        pd.DataFrame([{"type": "naive", **stats_naive}, {"type": "declustered", **stats_weighted}]),
+        run_paths,
+        "declustering_stats.csv",
+        index=False,
+    )
+    return result
+
+
+def run_eda_domain_spatial(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    plot_xy_scatter(df, "x", "y", "value", str(run_paths.figure_path("eda_spatial.png")), color_by="domain")
+    return {"status": "ok"}
+
+
+def run_variography(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    model = _resolve_variogram_model(df, config, run_paths)
+    return {"model": model}
+
+
+def run_anisotropy(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    if not config["anisotropy"]["enabled"]:
+        return {"status": "disabled"}
+    results = anisotropy_sweep(
+        df,
+        "x",
+        "y",
+        "value",
+        config["anisotropy"]["azimuths"],
+        config["variography"]["n_lags"],
+        config["variography"]["lag_size"],
+        config["variography"]["max_pairs"],
+    )
+    save_table(pd.DataFrame(results), run_paths, "anisotropy_sweep.csv", index=False)
+    return {"results": results}
+
+
+def run_block_model(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    grid_cfg = config["block_model"]
+    if grid_cfg["auto_from_data"]:
+        spec = grid_from_extents(df, float(grid_cfg["dx"]), float(grid_cfg["dy"]), float(grid_cfg["dz"]), pad=float(grid_cfg["pad"]))
+    else:
+        spec = {
+            "xmin": float(grid_cfg["xmin"]),
+            "ymin": float(grid_cfg["ymin"]),
+            "zmin": float(grid_cfg["zmin"]),
+            "nx": int(grid_cfg["nx"]),
+            "ny": int(grid_cfg["ny"]),
+            "nz": int(grid_cfg["nz"]),
+            "dx": float(grid_cfg["dx"]),
+            "dy": float(grid_cfg["dy"]),
+            "dz": float(grid_cfg["dz"]),
+        }
+    grid_df = build_block_grid(spec)
+    save_table(grid_df, run_paths, "block_model_grid.csv", index=False)
+    return {"grid_spec": spec, "rows": int(len(grid_df))}
+
+
+def run_estimation_ok(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    model = _resolve_variogram_model(df, config, run_paths)
+    search = _build_search_params(config)
+
+    grid_spec = run_block_model(config, run_paths)["grid_spec"]
+    grid_df = build_block_grid(grid_spec)
+
+    mode = config["kriging"]["mode"]
+    block_cfg = config["kriging"]["block"]
+    discretization = BlockDiscretization(**block_cfg["discretization"])
+    block_points = None
+    if mode == "block":
+        if any(val is None for val in (block_cfg["dx"], block_cfg["dy"], block_cfg["dz"])):
+            mode = "point"
+        else:
+            subcells = discretize_blocks(
+                grid_df,
+                size=(block_cfg["dx"], block_cfg["dy"], block_cfg["dz"]),
+                discretization=discretization,
+            )
+            block_points = subcells.groupby("block_id")[["x", "y", "z"]].apply(lambda x: x.to_numpy()).tolist()
+
+    rows = []
+    for idx, row in grid_df.iterrows():
+        if mode == "block" and block_points is not None:
+            points = block_points[idx]
+        else:
+            points = None
+        result = ordinary_kriging(
             df,
             "x",
             "y",
             "z",
-            float(grid_cfg.get("dx", 25.0)),
-            float(grid_cfg.get("dy", 25.0)),
-            float(grid_cfg.get("dz", 5.0)),
-            pad=float(grid_cfg.get("pad", 0.0)),
+            "value",
+            (row["x"], row["y"], row["z"]),
+            model,
+            search,
+            block_points=points,
         )
-    else:
-        grid_spec = {
-            "nx": grid_cfg["nx"],
-            "ny": grid_cfg["ny"],
-            "nz": grid_cfg.get("nz", 1),
-            "xmin": grid_cfg["xmin"],
-            "ymin": grid_cfg["ymin"],
-            "zmin": grid_cfg.get("zmin", 0.0),
-            "dx": grid_cfg["dx"],
-            "dy": grid_cfg["dy"],
-            "dz": grid_cfg.get("dz", 1.0),
-        }
-    grid_df = make_grid_dataframe(grid_spec)
-    return grid_spec, grid_df
+        rows.append({**row.to_dict(), **result})
+
+    out = pd.DataFrame(rows)
+    save_table(out, run_paths, "kriging_estimates.csv", index=False)
+    plot_xy_scatter(out, "x", "y", "estimate", str(run_paths.figure_path("kriging_estimate.png")))
+    return {"rows": int(len(out))}
 
 
-def run_setup_check(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, df_raw, mapping = _load_data(cfg)
-
-    summary = pd.DataFrame(
-        [
-            {
-                "raw_rows": df_raw.shape[0],
-                "raw_columns": df_raw.shape[1],
-                "processed_rows": df.shape[0],
-                "processed_columns": df.shape[1],
-                "mapped_columns": json.dumps(mapping, ensure_ascii=False),
-            }
-        ]
-    )
-    summary_path = os.path.join(paths["tables"], "setup_check_summary.csv")
-    summary.to_csv(summary_path, index=False)
-
-    head_path = os.path.join(paths["tables"], "setup_check_head.csv")
-    df.head(20).to_csv(head_path, index=False)
-
-    return [summary_path, head_path]
-
-
-def run_data_qaqc(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-
-    stats = basic_stats(df["var"])
-    stats_path = os.path.join(paths["tables"], "qaqc_basic_stats.csv")
-    pd.DataFrame([stats]).to_csv(stats_path, index=False)
-
-    missing_report = df.isna().sum().to_frame(name="missing").reset_index().rename(columns={"index": "column"})
-    missing_path = os.path.join(paths["tables"], "qaqc_missing_report.csv")
-    missing_report.to_csv(missing_path, index=False)
-
-    hist_path = os.path.join(paths["figures"], "qaqc_hist_var.png")
-    qq_path = os.path.join(paths["figures"], "qaqc_qq_var.png")
-    plot_hist(df["var"], hist_path)
-    plot_qq(df["var"], qq_path)
-
-    return [stats_path, missing_path, hist_path, qq_path]
-
-
-def run_compositing_declustering(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-
-    df = df.copy()
-    df["decluster_weight"] = 1.0
-
-    out_path = os.path.join(paths["tables"], "compositing_declustering_samples.csv")
-    df.to_csv(out_path, index=False)
-
-    stats = basic_stats(df["var"])
-    stats_path = os.path.join(paths["tables"], "compositing_declustering_stats.csv")
-    pd.DataFrame([stats]).to_csv(stats_path, index=False)
-
-    return [out_path, stats_path]
-
-
-def run_eda_domain_spatial(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-
-    fig_path = os.path.join(paths["figures"], "eda_domain_spatial.png")
-    plot_xy_scatter(df, "x", "y", "var", fig_path, color_by="domain")
-
-    return [fig_path]
-
-
-def run_variography(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-
-    vario_params = cfg.get("variogram", {})
-    exp = experimental_variogram_2d(df, "x", "y", "var", vario_params)
-    model = fit_variogram_model(exp, float(df["var"].var(ddof=1)), model_type="spherical")
-
-    fig_path = os.path.join(paths["figures"], "variogram.png")
-    model_path = os.path.join(paths["models"], "variogram_var.json")
-    plot_variogram(exp, model, fig_path)
-    save_variogram_model(model, model_path)
-
-    return [fig_path, model_path]
-
-
-def run_block_model(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-    _grid_spec, grid_df = _grid_from_config(df, cfg)
-
-    grid_path = os.path.join(paths["tables"], "block_model_grid.csv")
-    export_grid_to_csv(grid_df, grid_path)
-
-    return [grid_path]
-
-
-def run_estimation_ok(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-    _grid_spec, grid_df = _grid_from_config(df, cfg)
-
-    model_path = os.path.join(paths["models"], "variogram_var.json")
-    if os.path.exists(model_path):
-        with open(model_path, "r", encoding="utf-8") as f:
-            model = json.load(f)
-    else:
-        vario_params = cfg.get("variogram", {})
-        exp = experimental_variogram_2d(df, "x", "y", "var", vario_params)
-        model = fit_variogram_model(exp, float(df["var"].var(ddof=1)), model_type="spherical")
-        save_variogram_model(model, model_path)
-
-    krig_cfg = cfg.get("kriging", {})
-    kriged = ordinary_kriging_2d(df, "x", "y", "var", grid_df, model, krig_cfg)
-
-    out_path = os.path.join(paths["tables"], "kriging_estimates.csv")
-    kriged.to_csv(out_path, index=False)
-
-    fig_path = os.path.join(paths["figures"], "kriging_estimate.png")
-    plot_xy_scatter(kriged, "x", "y", "estimate", fig_path)
-
-    return [out_path, fig_path, model_path]
-
-
-def run_validation(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    df, _df_raw, _mapping = _load_data(cfg)
-
-    krig_cfg = cfg.get("kriging", {})
-    cv_df, metrics = simple_cross_validation(
+def run_validation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    df, _metadata = _prepare_data(config)
+    model = _resolve_variogram_model(df, config, run_paths)
+    search = _build_search_params(config)
+    cv_cfg = config["validation"]
+    cv_result = kriging_cross_validation(
         df,
         "x",
         "y",
-        "var",
-        radius=float(krig_cfg.get("search_radius", 150.0)),
-        max_samples=int(krig_cfg.get("max_samples", 12)),
+        "z",
+        "value",
+        model,
+        search,
+        method=cv_cfg["cv"],
+        n_splits=cv_cfg["kfold_splits"],
     )
+    save_table(cv_result.data, run_paths, "validation_predictions.csv", index=False)
+    save_table(pd.DataFrame([cv_result.metrics]), run_paths, "validation_metrics.csv", index=False)
 
-    metrics_path = os.path.join(paths["tables"], "validation_metrics.csv")
-    pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-
-    preds_path = os.path.join(paths["tables"], "validation_predictions.csv")
-    cv_df[["var", "pred"]].to_csv(preds_path, index=False)
-
-    return [metrics_path, preds_path]
+    domain_col = "domain" if "domain" in df.columns else None
+    if domain_col:
+        fig = plot_swath_panels(df, "x", "y", "value", domain_col, n_bins=cv_cfg["swath_bins"])
+        save_figure(fig, run_paths, "validation_swath.png")
+    return {"metrics": cv_result.metrics}
 
 
-def run_uncertainty_simulation(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-
-    kriging_path = os.path.join(paths["tables"], "kriging_estimates.csv")
-    if not os.path.exists(kriging_path):
-        run_estimation_ok(cfg, output_dir=output_dir)
-
-    kriging_df = pd.read_csv(kriging_path)
-    n_realizations = int(cfg.get("simulation", {}).get("n_realizations", 25))
-
-    rng = np.random.default_rng(42)
-    variance = kriging_df.get("variance", pd.Series(np.zeros(len(kriging_df))))
-    std = np.sqrt(np.clip(variance, 0.0, None))
-    simulations = rng.normal(loc=kriging_df["estimate"].values[:, None], scale=std.values[:, None], size=(len(kriging_df), n_realizations))
-
+def run_simulation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
+    if not config["simulation"]["enabled"]:
+        return {"status": "disabled"}
+    krig_path = run_paths.table_path("kriging_estimates.csv")
+    if not krig_path.exists():
+        run_estimation_ok(config, run_paths)
+    krig = pd.read_csv(krig_path)
+    rng = np.random.default_rng(int(config["simulation"]["random_seed"]))
+    nreal = int(config["simulation"]["n_realizations"])
+    std = np.sqrt(np.clip(krig["variance"].to_numpy(dtype=float), 0.0, None))
+    sims = rng.normal(loc=krig["estimate"].to_numpy()[:, None], scale=std[:, None], size=(len(krig), nreal))
     summary = pd.DataFrame(
         {
-            "x": kriging_df["x"],
-            "y": kriging_df["y"],
-            "mean": simulations.mean(axis=1),
-            "p10": np.percentile(simulations, 10, axis=1),
-            "p90": np.percentile(simulations, 90, axis=1),
+            "x": krig["x"],
+            "y": krig["y"],
+            "mean": sims.mean(axis=1),
+            "p10": np.percentile(sims, 10, axis=1),
+            "p90": np.percentile(sims, 90, axis=1),
         }
     )
-
-    summary_path = os.path.join(paths["tables"], "simulation_summary.csv")
-    summary.to_csv(summary_path, index=False)
-
-    return [summary_path, kriging_path]
+    save_table(summary, run_paths, "simulation_summary.csv", index=False)
+    return {"rows": int(len(summary))}
 
 
-def run_reporting_export(cfg: Dict, output_dir: str = "outputs") -> List[str]:
-    paths = ensure_output_dirs(output_dir)
-    manifest_path = os.path.join(paths["manifests"], "manifest.jsonl")
-    report_path = os.path.join(paths["tables"], "reporting_export.csv")
+def run_reporting(config: Dict[str, object], run_paths: RunPaths, metadata: Dict[str, object], metrics: Dict[str, object]) -> Dict[str, object]:
+    manifest_path, _ = write_manifest(
+        run_paths,
+        config={
+            "config": config,
+            "input": metadata,
+            "metrics": metrics,
+        },
+    )
+    return {"manifest": str(manifest_path)}
 
-    if os.path.exists(manifest_path):
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            entries = [json.loads(line) for line in f if line.strip()]
-        rows = [
-            {
-                "timestamp": entry.get("timestamp"),
-                "step": entry.get("step"),
-                "artifact": artifact,
-            }
-            for entry in entries
-            for artifact in entry.get("artifacts", [])
-        ]
-        pd.DataFrame(rows).to_csv(report_path, index=False)
-    else:
-        pd.DataFrame([], columns=["timestamp", "step", "artifact"]).to_csv(report_path, index=False)
 
-    return [report_path]
+def run_pipeline(config_path: str, stage: str = "all") -> RunPaths:
+    config = load_config(config_path)
+    run_name = config["outputs"]["run_name"]
+    run_paths = create_run_dir(config["outputs"]["base_dir"], prefix="run" if run_name == "auto" else run_name)
+
+    metadata: Dict[str, object] = {}
+    metrics: Dict[str, object] = {}
+
+    if stage in {"all", "setup"}:
+        result = run_setup_check(config, run_paths)
+        metadata.update(result.get("metadata", {}))
+
+    if stage in {"all", "qaqc"}:
+        metrics["qaqc"] = run_data_qaqc(config, run_paths)
+
+    if stage in {"all", "compositing"}:
+        metrics["compositing"] = run_compositing_declustering(config, run_paths)
+
+    if stage in {"all", "eda"}:
+        metrics["eda"] = run_eda_domain_spatial(config, run_paths)
+
+    if stage in {"all", "variography"}:
+        metrics["variography"] = run_variography(config, run_paths)
+
+    if stage in {"all", "anisotropy"}:
+        metrics["anisotropy"] = run_anisotropy(config, run_paths)
+
+    if stage in {"all", "blockmodel"}:
+        metrics["blockmodel"] = run_block_model(config, run_paths)
+
+    if stage in {"all", "kriging"}:
+        metrics["kriging"] = run_estimation_ok(config, run_paths)
+
+    if stage in {"all", "validation"}:
+        metrics["validation"] = run_validation(config, run_paths)
+
+    if stage in {"all", "simulation"}:
+        metrics["simulation"] = run_simulation(config, run_paths)
+
+    if stage in {"all", "report"}:
+        run_reporting(config, run_paths, metadata, metrics)
+
+    return run_paths

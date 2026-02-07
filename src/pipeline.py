@@ -9,6 +9,7 @@ from typing import Dict
 import pandas as pd
 
 from .eda import basic_stats, plot_hist, plot_qq, plot_xy_scatter
+from .geostats_pipeline.reporting import create_run_dir, save_table, write_manifest
 from .grid import export_grid_to_csv, grid_from_extents, make_grid_dataframe
 from .kriging import ordinary_kriging_2d
 from .preprocess import load_and_preprocess
@@ -50,11 +51,11 @@ def run_pipeline(config_path: str) -> None:
 
     cfg = _load_config(config_path)
 
-    os.makedirs("outputs/figures", exist_ok=True)
-    os.makedirs("outputs/tables", exist_ok=True)
-    os.makedirs("outputs/models", exist_ok=True)
-    log_path = _setup_logging("outputs/logs")
+    run_paths = create_run_dir("outputs")
+    log_path = _setup_logging(str(run_paths.logs))
+    write_manifest(run_paths, cfg)
     logging.info("Log path: %s", log_path)
+    logging.info("Run directory: %s", run_paths.base)
 
     df, _df_raw, _mapping = load_and_preprocess(cfg)
     required = ["x", "y", "var"]
@@ -63,11 +64,11 @@ def run_pipeline(config_path: str) -> None:
             raise KeyError(f"Missing required column after mapping: {col}")
 
     stats = basic_stats(df["var"])
-    pd.DataFrame([stats]).to_csv("outputs/tables/basic_stats.csv", index=False)
+    save_table(pd.DataFrame([stats]), run_paths, "basic_stats.csv", index=False)
 
-    plot_hist(df["var"], "outputs/figures/hist_var.png")
-    plot_qq(df["var"], "outputs/figures/qq_var.png")
-    plot_xy_scatter(df, "x", "y", "var", "outputs/figures/xy_scatter.png", color_by="domain")
+    plot_hist(df["var"], str(run_paths.figure_path("hist_var.png")))
+    plot_qq(df["var"], str(run_paths.figure_path("qq_var.png")))
+    plot_xy_scatter(df, "x", "y", "var", str(run_paths.figure_path("xy_scatter.png")), color_by="domain")
 
     grid_cfg = cfg.get("grid", {})
     if grid_cfg.get("auto_from_data", True):
@@ -95,19 +96,19 @@ def run_pipeline(config_path: str) -> None:
         }
 
     grid_df = make_grid_dataframe(grid_spec)
-    export_grid_to_csv(grid_df, "outputs/tables/grid.csv")
+    export_grid_to_csv(grid_df, str(run_paths.table_path("grid.csv")))
 
     vario_params = cfg.get("variogram", {})
     exp = experimental_variogram_2d(df, "x", "y", "var", vario_params)
     model = fit_variogram_model(exp, float(df["var"].var(ddof=1)), model_type="spherical")
-    plot_variogram(exp, model, "outputs/figures/variogram.png")
-    save_variogram_model(model, "outputs/models/variogram_var.json")
+    plot_variogram(exp, model, str(run_paths.figure_path("variogram.png")))
+    save_variogram_model(model, str(run_paths.model_path("variogram_var.json")))
 
     krig_cfg = cfg.get("kriging", {})
     kriged = ordinary_kriging_2d(df, "x", "y", "var", grid_df, model, krig_cfg)
-    kriged.to_csv("outputs/tables/kriging_var.csv", index=False)
+    save_table(kriged, run_paths, "kriging_var.csv", index=False)
 
-    plot_xy_scatter(kriged, "x", "y", "estimate", "outputs/figures/kriging_estimate.png")
+    plot_xy_scatter(kriged, "x", "y", "estimate", str(run_paths.figure_path("kriging_estimate.png")))
 
     cv_df, metrics = simple_cross_validation(
         df,
@@ -117,8 +118,8 @@ def run_pipeline(config_path: str) -> None:
         radius=float(krig_cfg.get("search_radius", 150.0)),
         max_samples=int(krig_cfg.get("max_samples", 12)),
     )
-    pd.DataFrame([metrics]).to_csv("outputs/tables/validation_metrics.csv", index=False)
-    cv_df[["var", "pred"]].to_csv("outputs/tables/validation_predictions.csv", index=False)
+    save_table(pd.DataFrame([metrics]), run_paths, "validation_metrics.csv", index=False)
+    save_table(cv_df[["var", "pred"]], run_paths, "validation_predictions.csv", index=False)
 
     logging.info("Pipeline completed")
 

@@ -26,6 +26,15 @@ Repositorio “Colab-ready” para exploración geoestadística (EDA), variograf
 └─ README.md
 ```
 
+## Etapas del flujo (diagrama/tabla)
+| Etapa | Notebook / CLI | Qué se hace | Outputs esperados |
+| --- | --- | --- | --- |
+| 1. EDA | `notebooks/01_eda_geo.ipynb` | Revisión estadística básica, histogramas, QQ-plot y dispersión XY. | Figuras de distribución y tablas de resumen. |
+| 2. Variografía | `notebooks/02_variography.ipynb` | Cálculo de variograma experimental y ajuste de modelos. | Curvas de variograma y parámetros ajustados. |
+| 3. Anisotropía | `notebooks/03_anisotropy_analysis.ipynb` | Análisis direccional y comparación de estructuras. | Mapas/plots direccionales y conclusiones de anisotropía. |
+| 4. Soporte / Block model | `notebooks/04_block_model_support.ipynb` | Ajuste de soporte para block model (upscaling). | Resúmenes de soporte y check de coherencia. |
+| 5. Pipeline end-to-end | `python -m src.pipeline config/project.json` | EDA + variografía + kriging 2D + validación simple. | `outputs/figures/`, `outputs/tables/`, `outputs/models/`, `outputs/logs/`. |
+
 ## Quickstart en Google Colab
 1) Clonar el repo en `/content`:
 ```bash
@@ -46,6 +55,26 @@ from eda_geo import basic_stats
 from variography import experimental_variogram
 ```
 
+## Cómo correr notebooks o CLI
+### Notebooks
+1) Instalar dependencias:
+```bash
+pip install -r requirements.txt
+```
+2) Levantar Jupyter y abrir los notebooks:
+```bash
+jupyter lab
+```
+3) Ejecutar en orden sugerido: `01_eda_geo.ipynb` → `02_variography.ipynb` → `03_anisotropy_analysis.ipynb` → `04_block_model_support.ipynb`.
+
+### CLI (pipeline)
+1) Configurar el archivo `config/project.json` con rutas y parámetros.
+2) Ejecutar el pipeline:
+```bash
+python -m src.pipeline config/project.json
+```
+3) Los resultados se escriben en `outputs/` (figuras, tablas, modelos y logs).
+
 ## Datos esperados
 Los notebooks y funciones asumen un `DataFrame` con columnas típicas:
 - `X`, `Y`, `Z`: coordenadas en metros.
@@ -59,6 +88,14 @@ Los notebooks y funciones asumen un `DataFrame` con columnas típicas:
 - Documentar unidades (metros, grados, etc.).
 - Preferir funciones puras y testeables.
 - Mantener comentarios breves en español.
+
+## Outputs versionados
+- Se versiona la carpeta `outputs/eda/` con un `.gitkeep` para preservar la estructura del repo.
+- Los outputs generados por notebooks o pipeline se guardan en `outputs/` pero no se versionan por defecto (para evitar binarios pesados y resultados específicos de cada corrida).
+- Si necesitás versionar un output (por ejemplo, un modelo final o una tabla de referencia), movelo a una carpeta explícita de artefactos y documentalo en el README.
+
+## Advertencia sobre kriging y recuperables
+El kriging entrega una **estimación suavizada** (minimiza varianza), por lo que **subestima la variabilidad** real. Para recuperar distribuciones y métricas de **recuperables**, se requiere **simulación geoestadística** (p. ej. SGS) o técnicas equivalentes; no alcanza con el mapa krigeado.
 
 ## When generating code with Codex
 - Separar **cálculo** de **visualización** (plotting) en funciones distintas.

@@ -85,6 +85,40 @@ def discretize_blocks(
     return pd.concat(subcells, ignore_index=True)
 
 
+def grid_from_extents(
+    df: pd.DataFrame,
+    dx: float,
+    dy: float,
+    dz: float,
+    pad: float = 0.0,
+) -> dict:
+    xmin, xmax = float(df["x"].min()), float(df["x"].max())
+    ymin, ymax = float(df["y"].min()), float(df["y"].max())
+    zmin, zmax = float(df["z"].min()), float(df["z"].max())
+
+    xmin -= pad
+    ymin -= pad
+    zmin -= pad
+    xmax += pad
+    ymax += pad
+    zmax += pad
+
+    nx = int(np.ceil((xmax - xmin) / dx))
+    ny = int(np.ceil((ymax - ymin) / dy))
+    nz = int(np.ceil((zmax - zmin) / dz))
+
+    return {"xmin": xmin, "ymin": ymin, "zmin": zmin, "nx": nx, "ny": ny, "nz": nz, "dx": dx, "dy": dy, "dz": dz}
+
+
+def build_block_grid(spec: dict) -> pd.DataFrame:
+    xs = spec["xmin"] + (np.arange(spec["nx"]) + 0.5) * spec["dx"]
+    ys = spec["ymin"] + (np.arange(spec["ny"]) + 0.5) * spec["dy"]
+    zs = spec["zmin"] + (np.arange(spec["nz"]) + 0.5) * spec["dz"]
+    grid = np.array(np.meshgrid(xs, ys, zs, indexing="xy"))
+    grid = grid.reshape(3, -1).T
+    return pd.DataFrame(grid, columns=["x", "y", "z"])
+
+
 def block_covariance(
     block_points: np.ndarray,
     covariance_fn,

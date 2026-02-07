@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,19 +9,13 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
-from src.kriging import ordinary_kriging_2d
-from src.utils_spatial import validate_columns
+from .kriging import SearchParameters, ordinary_kriging
 
 
 @dataclass
 class CVResult:
     data: pd.DataFrame
     metrics: Dict[str, float]
-
-
-def _prepare_grid(df: pd.DataFrame, xcol: str, ycol: str) -> pd.DataFrame:
-    """Create a grid DataFrame with columns 'x' and 'y'."""
-    return df[[xcol, ycol]].rename(columns={xcol: "x", ycol: "y"}).copy()
 
 
 def spatial_kfold_indices(
@@ -31,8 +25,6 @@ def spatial_kfold_indices(
     n_splits: int = 5,
     random_state: int = 13,
 ) -> np.ndarray:
-    """Assign spatial folds using KMeans clustering on coordinates."""
-    validate_columns(df, [xcol, ycol])
     coords = df[[xcol, ycol]].to_numpy()
     n_splits = max(2, min(n_splits, len(df)))
     labels = KMeans(n_clusters=n_splits, random_state=random_state, n_init=10).fit_predict(coords)
@@ -43,30 +35,36 @@ def kriging_cross_validation(
     df: pd.DataFrame,
     xcol: str,
     ycol: str,
+    zcol: str,
     vcol: str,
-    vario: Dict[str, float],
-    params: Dict[str, float],
+    model: Dict[str, float],
+    search: SearchParameters,
     method: str = "loo",
     n_splits: int = 5,
     random_state: int = 13,
 ) -> CVResult:
-    """Cross-validation using ordinary kriging (LOO or spatial K-fold)."""
-    validate_columns(df, [xcol, ycol, vcol])
     method = method.lower()
-    if method not in {"loo", "kfold"}:
-        raise ValueError("method must be 'loo' or 'kfold'")
+    if method not in {"loo", "kfold_spatial", "kfold"}:
+        raise ValueError("method must be 'loo' or 'kfold_spatial'")
 
     results: List[pd.DataFrame] = []
-
     if method == "loo":
         for idx in df.index:
             train = df.drop(index=idx)
             test = df.loc[[idx]]
-            grid_df = _prepare_grid(test, xcol, ycol)
-            preds = ordinary_kriging_2d(train, xcol, ycol, vcol, grid_df, vario, params)
+            pred = ordinary_kriging(
+                train,
+                xcol,
+                ycol,
+                zcol,
+                vcol,
+                (float(test[xcol].iloc[0]), float(test[ycol].iloc[0]), float(test[zcol].iloc[0])),
+                model,
+                search,
+            )
             out = test.copy()
-            out["estimate"] = preds["estimate"].to_numpy()
-            out["variance"] = preds["variance"].to_numpy()
+            out["estimate"] = pred["estimate"]
+            out["variance"] = pred["variance"]
             out["fold"] = int(idx)
             results.append(out)
     else:
@@ -74,13 +72,20 @@ def kriging_cross_validation(
         for fold_id in range(labels.max() + 1):
             train = df.loc[labels != fold_id]
             test = df.loc[labels == fold_id]
-            grid_df = _prepare_grid(test, xcol, ycol)
-            preds = ordinary_kriging_2d(train, xcol, ycol, vcol, grid_df, vario, params)
-            out = test.copy()
-            out["estimate"] = preds["estimate"].to_numpy()
-            out["variance"] = preds["variance"].to_numpy()
-            out["fold"] = int(fold_id)
-            results.append(out)
+            rows = []
+            for idx, row in test.iterrows():
+                pred = ordinary_kriging(
+                    train,
+                    xcol,
+                    ycol,
+                    zcol,
+                    vcol,
+                    (float(row[xcol]), float(row[ycol]), float(row[zcol])),
+                    model,
+                    search,
+                )
+                rows.append({**row.to_dict(), "estimate": pred["estimate"], "variance": pred["variance"], "fold": fold_id})
+            results.append(pd.DataFrame(rows))
 
     cv_df = pd.concat(results, axis=0).sort_index()
     cv_df["error"] = cv_df["estimate"] - cv_df[vcol]
@@ -94,7 +99,6 @@ def compute_cv_metrics(
     pred_col: str = "estimate",
     var_col: str = "variance",
 ) -> Dict[str, float]:
-    """Compute validation metrics (ME, RMSE, MSE, slope/intercept, MSDR)."""
     errors = df[pred_col] - df[vcol]
     mse = float(np.mean(errors**2))
     metrics = {
@@ -146,7 +150,6 @@ def plot_swath_by_domain(
     title: str | None = None,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Plot swath mean values by domain along a coordinate."""
     if ax is None:
         _, ax = plt.subplots(figsize=(6, 4))
 
@@ -163,8 +166,6 @@ def plot_swath_by_domain(
 
 
 def add_principal_axes(df: pd.DataFrame, xcol: str, ycol: str) -> pd.DataFrame:
-    """Add PCA-based principal axis coordinates to the DataFrame."""
-    validate_columns(df, [xcol, ycol])
     coords = df[[xcol, ycol]].to_numpy()
     pca = PCA(n_components=2)
     transformed = pca.fit_transform(coords)
@@ -182,7 +183,6 @@ def plot_swath_panels(
     domain_col: str,
     n_bins: int = 10,
 ) -> plt.Figure:
-    """Create swath plots along X, Y, and PCA axes by domain."""
     df_axes = add_principal_axes(df, xcol, ycol)
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 

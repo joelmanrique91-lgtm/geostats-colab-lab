@@ -1,52 +1,107 @@
-data_csv_path: csv/Conminution.csv
-columns:
-  x: X
-  y: Y
-  z: Z
-  variable_objetivo: Bwi_kWh_t
-  domain: Lito
-  lithology: null
-  alteration: null
-nodata_values:
-  - ""
-  - NA
-  - NaN
-  - -999
-  - -99
-  - -1.0e21
-topcut:
-  enabled: false
-  high: null
-decluster:
-  enabled: false
-  cell: 50.0
+data:
+  path: dataset_original.csv
+  x_col: X
+  y_col: Y
+  z_col: Z
+  value_col: Magsus
+  domain_col: null
+  support: point
+  from_col: null
+  to_col: null
+  hole_id_col: null
+  allow_pseudo_support: false
+  pseudo_support_length: null
+
+qaqc:
+  duplicate_strategy: drop
+  outlier:
+    enabled: false
+    zscore: 4.0
+
+declustering:
+  enabled: true
+  cell_size:
+    x: 50.0
+    y: 50.0
+    z: 10.0
+  use_3d: false
+
 compositing:
   enabled: false
-  length: 2.0
-  alonghole_col: BHID
-grid:
+  target_length: 2.0
+  min_length: 1.0
+
+variography:
+  n_lags: 12
+  lag_size: 50.0
+  tolerance: 0.5
+  directions: [0.0, 45.0, 90.0, 135.0]
+  bandwidth: 9999.0
+  model_type: spherical
+  initial_params:
+    nugget: 0.0
+    sill: null
+    range: null
+  max_pairs: 50000
+
+anisotropy:
+  enabled: false
+  azimuths: [0, 30, 60, 90, 120, 150]
+
+block_model:
   auto_from_data: true
   pad: 0.0
+  dx: 25.0
+  dy: 25.0
+  dz: 5.0
   nx: null
   ny: null
   nz: 1
   xmin: null
   ymin: null
   zmin: null
-  dx: 25.0
-  dy: 25.0
-  dz: 5.0
-variogram:
-  nlag: 12
-  lag: 50.0
-  azm: 0.0
-  atol: 22.5
-  bandwh: 9999.0
-  dip: 0.0
-  dtol: 22.5
-  bandwd: 9999.0
+
 kriging:
-  type: ok
-  search_radius: 150.0
-  min_samples: 4
-  max_samples: 16
+  mode: block
+  block:
+    dx: 25.0
+    dy: 25.0
+    dz: 5.0
+    discretization:
+      nx: 2
+      ny: 2
+      nz: 1
+  neighborhood:
+    ranges:
+      major: 150.0
+      minor: 150.0
+      vertical: 50.0
+    angles:
+      azimuth: 0.0
+      dip: 0.0
+      rake: 0.0
+    min_samples: 4
+    max_samples: 16
+    max_per_hole: null
+    octants: 8
+    condition_max: 1.0e10
+  variogram_model:
+    type: spherical
+    nugget: 0.0
+    sill: null
+    range: null
+
+validation:
+  cv: loo
+  kfold_splits: 5
+  metrics: [ME, RMSE, MSE, slope, intercept, MSDR]
+  swath_bins: 10
+
+simulation:
+  enabled: false
+  n_realizations: 25
+  random_seed: 42
+
+outputs:
+  base_dir: outputs
+  run_name: auto

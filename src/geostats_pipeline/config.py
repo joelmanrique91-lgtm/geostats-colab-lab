@@ -9,102 +9,155 @@ import yaml
 Number = (int, float)
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "data_csv_path": "csv/Conminution.csv",
-    "columns": {
-        "x": "X",
-        "y": "Y",
-        "z": "Z",
-        "variable_objetivo": "Bwi_kWh_t",
-        "domain": "Lito",
-        "lithology": None,
-        "alteration": None,
+    "data": {
+        "path": "data_sample/sample_drillholes.csv",
+        "x_col": "X",
+        "y_col": "Y",
+        "z_col": "Z",
+        "value_col": "grade",
+        "domain_col": "domain",
+        "support": "point",
+        "from_col": None,
+        "to_col": None,
+        "hole_id_col": None,
+        "allow_pseudo_support": False,
+        "pseudo_support_length": None,
     },
-    "nodata_values": ["", "NA", "NaN", -999, -99, -1.0e21],
-    "topcut": {"enabled": False, "high": None},
-    "decluster": {"enabled": False, "cell": 50.0},
-    "compositing": {"enabled": False, "length": 2.0, "alonghole_col": "BHID"},
-    "grid": {
+    "qaqc": {
+        "duplicate_strategy": "drop",
+        "outlier": {"enabled": False, "zscore": 4.0},
+    },
+    "declustering": {
+        "enabled": True,
+        "cell_size": {"x": 50.0, "y": 50.0, "z": 10.0},
+        "use_3d": False,
+    },
+    "compositing": {
+        "enabled": False,
+        "target_length": 2.0,
+        "min_length": 1.0,
+    },
+    "variography": {
+        "n_lags": 12,
+        "lag_size": 50.0,
+        "tolerance": 0.5,
+        "directions": [0.0, 45.0, 90.0, 135.0],
+        "bandwidth": 9999.0,
+        "model_type": "spherical",
+        "initial_params": {"nugget": 0.0, "sill": None, "range": None},
+        "max_pairs": 50000,
+    },
+    "anisotropy": {"enabled": False, "azimuths": [0, 30, 60, 90, 120, 150]},
+    "block_model": {
         "auto_from_data": True,
         "pad": 0.0,
+        "dx": 25.0,
+        "dy": 25.0,
+        "dz": 5.0,
         "nx": None,
         "ny": None,
         "nz": 1,
         "xmin": None,
         "ymin": None,
         "zmin": None,
-        "dx": 25.0,
-        "dy": 25.0,
-        "dz": 5.0,
     },
-    "variogram": {
-        "nlag": 12,
-        "lag": 50.0,
-        "azm": 0.0,
-        "atol": 22.5,
-        "bandwh": 9999.0,
-        "dip": 0.0,
-        "dtol": 22.5,
-        "bandwd": 9999.0,
+    "kriging": {
+        "mode": "block",
+        "block": {"dx": 25.0, "dy": 25.0, "dz": 5.0, "discretization": {"nx": 2, "ny": 2, "nz": 1}},
+        "neighborhood": {
+            "ranges": {"major": 150.0, "minor": 150.0, "vertical": 50.0},
+            "angles": {"azimuth": 0.0, "dip": 0.0, "rake": 0.0},
+            "min_samples": 4,
+            "max_samples": 16,
+            "max_per_hole": None,
+            "octants": 8,
+            "condition_max": 1.0e10,
+        },
+        "variogram_model": {
+            "type": "spherical",
+            "nugget": 0.0,
+            "sill": None,
+            "range": None,
+        },
     },
-    "kriging": {"type": "ok", "search_radius": 150.0, "min_samples": 4, "max_samples": 16},
-}
-
-REQUIRED_KEYS = {
-    "data_csv_path": (str,),
-    "columns": (Mapping,),
-}
-
-REQUIRED_COLUMNS = {
-    "x": (str,),
-    "y": (str,),
-    "z": (str,),
-    "variable_objetivo": (str,),
+    "validation": {
+        "cv": "loo",
+        "kfold_splits": 5,
+        "metrics": ["ME", "RMSE", "MSE", "slope", "intercept", "MSDR"],
+        "swath_bins": 10,
+    },
+    "simulation": {"enabled": False, "n_realizations": 25, "random_seed": 42},
+    "outputs": {"base_dir": "outputs", "run_name": "auto"},
 }
 
 SCHEMA: Dict[str, Any] = {
-    "data_csv_path": (str,),
-    "columns": {
-        "x": (str, type(None)),
-        "y": (str, type(None)),
-        "z": (str, type(None)),
-        "variable_objetivo": (str, type(None)),
-        "domain": (str, type(None)),
-        "lithology": (str, type(None)),
-        "alteration": (str, type(None)),
+    "data": {
+        "path": (str,),
+        "x_col": (str,),
+        "y_col": (str,),
+        "z_col": (str,),
+        "value_col": (str,),
+        "domain_col": (str, type(None)),
+        "support": (str,),
+        "from_col": (str, type(None)),
+        "to_col": (str, type(None)),
+        "hole_id_col": (str, type(None)),
+        "allow_pseudo_support": (bool,),
+        "pseudo_support_length": Number + (type(None),),
     },
-    "nodata_values": [(str, int, float, type(None))],
-    "topcut": {"enabled": (bool,), "high": (int, float, type(None))},
-    "decluster": {"enabled": (bool,), "cell": Number},
-    "compositing": {"enabled": (bool,), "length": Number, "alonghole_col": (str, type(None))},
-    "grid": {
+    "qaqc": {"duplicate_strategy": (str,), "outlier": {"enabled": (bool,), "zscore": Number}},
+    "declustering": {
+        "enabled": (bool,),
+        "cell_size": {"x": Number, "y": Number, "z": Number},
+        "use_3d": (bool,),
+    },
+    "compositing": {"enabled": (bool,), "target_length": Number, "min_length": Number},
+    "variography": {
+        "n_lags": (int,),
+        "lag_size": Number,
+        "tolerance": Number,
+        "directions": [Number],
+        "bandwidth": Number,
+        "model_type": (str,),
+        "initial_params": {"nugget": Number + (type(None),), "sill": Number + (type(None),), "range": Number + (type(None),)},
+        "max_pairs": (int,),
+    },
+    "anisotropy": {"enabled": (bool,), "azimuths": [Number]},
+    "block_model": {
         "auto_from_data": (bool,),
         "pad": Number,
-        "nx": (int, type(None)),
-        "ny": (int, type(None)),
-        "nz": (int,),
-        "xmin": (int, float, type(None)),
-        "ymin": (int, float, type(None)),
-        "zmin": (int, float, type(None)),
         "dx": Number,
         "dy": Number,
         "dz": Number,
-    },
-    "variogram": {
-        "nlag": (int,),
-        "lag": Number,
-        "azm": Number,
-        "atol": Number,
-        "bandwh": Number,
-        "dip": Number,
-        "dtol": Number,
-        "bandwd": Number,
+        "nx": (int, type(None)),
+        "ny": (int, type(None)),
+        "nz": (int,),
+        "xmin": Number + (type(None),),
+        "ymin": Number + (type(None),),
+        "zmin": Number + (type(None),),
     },
     "kriging": {
-        "type": (str,),
-        "search_radius": Number,
-        "min_samples": (int,),
-        "max_samples": (int,),
+        "mode": (str,),
+        "block": {
+            "dx": Number,
+            "dy": Number,
+            "dz": Number,
+            "discretization": {"nx": (int,), "ny": (int,), "nz": (int,)},
+        },
+        "neighborhood": {
+            "ranges": {"major": Number, "minor": Number, "vertical": Number},
+            "angles": {"azimuth": Number, "dip": Number, "rake": Number},
+            "min_samples": (int,),
+            "max_samples": (int,),
+            "max_per_hole": (int, type(None)),
+            "octants": (int,),
+            "condition_max": Number,
+        },
+        "variogram_model": {"type": (str,), "nugget": Number, "sill": Number + (type(None),), "range": Number + (type(None),)},
     },
+    "validation": {"cv": (str,), "kfold_splits": (int,), "metrics": [str], "swath_bins": (int,)},
+    "simulation": {"enabled": (bool,), "n_realizations": (int,), "random_seed": (int,)},
+    "outputs": {"base_dir": (str,), "run_name": (str,)},
 }
 
 
@@ -116,23 +169,6 @@ def _deep_merge(defaults: Mapping[str, Any], overrides: Mapping[str, Any]) -> Di
         else:
             merged[key] = value
     return merged
-
-
-def _validate_required(cfg: Mapping[str, Any]) -> None:
-    for key, types in REQUIRED_KEYS.items():
-        if key not in cfg:
-            raise KeyError(f"Missing required config key: {key}")
-        if not isinstance(cfg[key], types):
-            raise TypeError(f"Config key '{key}' must be {types}, got {type(cfg[key]).__name__}")
-
-    columns = cfg["columns"]
-    for key, types in REQUIRED_COLUMNS.items():
-        if key not in columns:
-            raise KeyError(f"Missing required column mapping: columns.{key}")
-        if not isinstance(columns[key], types):
-            raise TypeError(
-                f"Config key 'columns.{key}' must be {types}, got {type(columns[key]).__name__}"
-            )
 
 
 def _validate_schema(cfg: Mapping[str, Any], schema: Mapping[str, Any], prefix: str = "") -> None:
@@ -165,7 +201,6 @@ def _validate_schema(cfg: Mapping[str, Any], schema: Mapping[str, Any], prefix: 
 
 
 def load_config(path: str | Path) -> Dict[str, Any]:
-    """Load YAML config, apply defaults, and validate required keys/types."""
     cfg_path = Path(path)
     if not cfg_path.exists():
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
@@ -177,8 +212,12 @@ def load_config(path: str | Path) -> Dict[str, Any]:
         raise TypeError("Config file must be a YAML mapping (dictionary).")
 
     cfg = _deep_merge(DEFAULT_CONFIG, data)
-    _validate_required(cfg)
     _validate_schema(cfg, SCHEMA)
+
+    support = cfg["data"]["support"]
+    if support not in {"point", "interval"}:
+        raise ValueError("data.support must be 'point' or 'interval'")
+
     return cfg
 
 

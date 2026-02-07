@@ -1,1 +1,1 @@
-"""Geostats pipeline utilities."""
+"""Pipeline helpers for geostatistics workflows."""

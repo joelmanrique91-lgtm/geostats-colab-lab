@@ -27,10 +27,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "duplicate_strategy": "drop",
         "outlier": {"enabled": False, "zscore": 4.0},
     },
+    "topcut": {
+        "enabled": False,
+        "high": None,
+        "by_domain": False,
+    },
     "declustering": {
         "enabled": True,
         "cell_size": {"x": 50.0, "y": 50.0, "z": 10.0},
         "use_3d": False,
+    },
+    "trend": {
+        "enabled": "auto",
+        "order": 1,
+        "r2_threshold": 0.2,
+    },
+    "transforms": {
+        "normal_score": {"enabled": False},
+        "indicators": {"enabled": False, "thresholds": []},
     },
     "compositing": {
         "enabled": False,
@@ -106,10 +120,20 @@ SCHEMA: Dict[str, Any] = {
         "pseudo_support_length": Number + (type(None),),
     },
     "qaqc": {"duplicate_strategy": (str,), "outlier": {"enabled": (bool,), "zscore": Number}},
+    "topcut": {"enabled": (bool,), "high": Number + (type(None),), "by_domain": (bool,)},
     "declustering": {
         "enabled": (bool,),
         "cell_size": {"x": Number, "y": Number, "z": Number},
         "use_3d": (bool,),
+    },
+    "trend": {
+        "enabled": (str, bool),
+        "order": (int,),
+        "r2_threshold": Number,
+    },
+    "transforms": {
+        "normal_score": {"enabled": (bool,)},
+        "indicators": {"enabled": (bool,), "thresholds": [Number]},
     },
     "compositing": {"enabled": (bool,), "target_length": Number, "min_length": Number},
     "variography": {

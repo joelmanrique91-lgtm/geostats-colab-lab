@@ -13,17 +13,52 @@ from .config import load_config
 from .declustering import cell_declustering
 from .eda import basic_stats, plot_histogram, plot_xy_scatter
 from .io import load_data, standardize_columns
-from .qaqc import basic_qaqc, outlier_report
+from .qaqc import apply_topcut, basic_qaqc
 from .reporting import RunPaths, create_run_dir, save_figure, save_table, write_manifest
 from .support import resolve_support
-from .validation import (
-    CVResult,
-    compute_cv_metrics,
-    kriging_cross_validation,
-    plot_swath_panels,
-)
+from .trending import TrendModel, fit_trend
+from .transforms import indicator_transform, normal_score_transform
+from .validation import compute_cv_metrics, kriging_cross_validation, plot_swath_comparison
 from .variography import experimental_variogram, fit_variogram_model, plot_variogram
 from .kriging import SearchParameters, ordinary_kriging
+
+
+def _apply_topcut_if_needed(df: pd.DataFrame, config: Dict[str, object]) -> pd.DataFrame:
+    topcut_cfg = config.get("topcut", {})
+    if not topcut_cfg.get("enabled"):
+        return df
+    high = topcut_cfg.get("high")
+    if high is None:
+        raise ValueError("Top-cut enabled but 'high' threshold is not set.")
+    domain_col = "domain" if topcut_cfg.get("by_domain") else None
+    return apply_topcut(df, "value", float(high), domain_col=domain_col)
+
+
+def _apply_trend_if_needed(
+    df: pd.DataFrame,
+    config: Dict[str, object],
+    run_paths: RunPaths,
+) -> tuple[pd.DataFrame, TrendModel | None, Dict[str, object]]:
+    trend_cfg = config.get("trend", {})
+    enabled = trend_cfg.get("enabled", "auto")
+    order = int(trend_cfg.get("order", 1))
+    r2_threshold = float(trend_cfg.get("r2_threshold", 0.0))
+    if enabled is False or enabled == "false":
+        return df, None, {"enabled": False}
+
+    trend_model, r2 = fit_trend(df, "value", ("x", "y", "z"), order=order)
+    use_trend = enabled is True or enabled == "true" or (enabled == "auto" and r2 >= r2_threshold)
+
+    info = {"enabled": bool(use_trend), "r2": r2, "order": order, "r2_threshold": r2_threshold}
+    if not use_trend:
+        save_table(pd.DataFrame([info]), run_paths, "trend_summary.csv", index=False)
+        return df, None, info
+
+    work = df.copy()
+    work["trend"] = trend_model.predict(work)
+    work["residual"] = work["value"] - work["trend"]
+    save_table(pd.DataFrame([info]), run_paths, "trend_summary.csv", index=False)
+    return work, trend_model, info
 
 
 def _prepare_data(config: Dict[str, object]) -> Tuple[pd.DataFrame, Dict[str, object]]:
@@ -32,10 +67,16 @@ def _prepare_data(config: Dict[str, object]) -> Tuple[pd.DataFrame, Dict[str, ob
 
     qaqc_cfg = config["qaqc"]
     df = basic_qaqc(df, "value", duplicate_strategy=qaqc_cfg["duplicate_strategy"])
+    df = _apply_topcut_if_needed(df, config)
     return df, metadata
 
 
-def _resolve_variogram_model(df: pd.DataFrame, config: Dict[str, object], run_paths: RunPaths) -> Dict[str, float]:
+def _resolve_variogram_model(
+    df: pd.DataFrame,
+    config: Dict[str, object],
+    run_paths: RunPaths,
+    tag: str | None = None,
+) -> Dict[str, float]:
     var_cfg = config["variography"]
     exp = experimental_variogram(
         df,
@@ -55,8 +96,9 @@ def _resolve_variogram_model(df: pd.DataFrame, config: Dict[str, object], run_pa
     )
     nugget = float(var_cfg["initial_params"]["nugget"])
     model = fit_variogram_model(exp, var_cfg["model_type"], sill=sill, rng=rng, nugget=nugget)
-    plot_variogram(exp, model, str(run_paths.figure_path("variogram.png")))
-    model_path = run_paths.model_path("variogram_model.json")
+    suffix = f"_{tag}" if tag else ""
+    plot_variogram(exp, model, str(run_paths.figure_path(f"variogram{suffix}.png")))
+    model_path = run_paths.model_path(f"variogram_model{suffix}.json")
     model_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
     return model
 
@@ -88,17 +130,35 @@ def run_setup_check(config: Dict[str, object], run_paths: RunPaths) -> Dict[str,
 
 
 def run_data_qaqc(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
-    df, _metadata = _prepare_data(config)
-    outlier_cfg = config["qaqc"]["outlier"]
-    outliers = outlier_report(df, "value", zscore=float(outlier_cfg["zscore"])) if outlier_cfg["enabled"] else pd.DataFrame()
-    if not outliers.empty:
-        save_table(outliers, run_paths, "qaqc_outliers.csv", index=False)
+    raw_df, metadata = load_data(config)
+    save_table(raw_df, run_paths, "dataset_original.csv", index=False)
+    df = standardize_columns(raw_df, config)
+    df = basic_qaqc(df, "value", duplicate_strategy=config["qaqc"]["duplicate_strategy"])
+    df = _apply_topcut_if_needed(df, config)
+    save_table(df, run_paths, "dataset_capped.csv", index=False)
 
     stats = basic_stats(df["value"])
     save_table(pd.DataFrame([stats]), run_paths, "qaqc_basic_stats.csv", index=False)
     save_table(df.isna().sum().to_frame("missing").reset_index(), run_paths, "qaqc_missing.csv", index=False)
     plot_histogram(df["value"], str(run_paths.figure_path("qaqc_histogram.png")), title="Histogram")
-    return {"stats": stats}
+
+    topcut_cfg = config.get("topcut", {})
+    if topcut_cfg.get("enabled"):
+        cap_report = {
+            "enabled": True,
+            "high": float(topcut_cfg["high"]),
+            "capped_count": int(df["capped_flag"].sum()) if "capped_flag" in df.columns else 0,
+        }
+        save_table(pd.DataFrame([cap_report]), run_paths, "topcut_report.csv", index=False)
+    else:
+        cap_report = {"enabled": False}
+
+    indicators_cfg = config.get("transforms", {}).get("indicators", {})
+    if indicators_cfg.get("enabled") and indicators_cfg.get("thresholds"):
+        indicators, thresholds = indicator_transform(df["value"], indicators_cfg["thresholds"])
+        save_table(indicators, run_paths, "indicator_variables.csv", index=False)
+
+    return {"stats": stats, "topcut": cap_report, "input": metadata}
 
 
 def run_compositing_declustering(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
@@ -138,14 +198,48 @@ def run_compositing_declustering(config: Dict[str, object], run_paths: RunPaths)
 
 def run_eda_domain_spatial(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
     df, _metadata = _prepare_data(config)
+    if config["declustering"]["enabled"]:
+        df = cell_declustering(df, config, output_dir=str(run_paths.base))
     plot_xy_scatter(df, "x", "y", "value", str(run_paths.figure_path("eda_spatial.png")), color_by="domain")
-    return {"status": "ok"}
+    stats_naive = basic_stats(df["value"])
+    stats_weighted = (
+        basic_stats(df["value"], df["declust_weight"]) if "declust_weight" in df.columns else {}
+    )
+    save_table(
+        pd.DataFrame([{"type": "naive", **stats_naive}, {"type": "declustered", **stats_weighted}]),
+        run_paths,
+        "eda_declustering_stats.csv",
+        index=False,
+    )
+    return {"status": "ok", "declustering_stats": True}
 
 
 def run_variography(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
     df, _metadata = _prepare_data(config)
-    model = _resolve_variogram_model(df, config, run_paths)
-    return {"model": model}
+    df, trend_model, trend_info = _apply_trend_if_needed(df, config, run_paths)
+    value_col = "residual" if trend_model else "value"
+
+    models: Dict[str, Dict[str, float]] = {}
+    domain_col = "domain" if "domain" in df.columns else None
+    if domain_col:
+        for domain, group in df.groupby(domain_col, dropna=False):
+            model = _resolve_variogram_model(
+                group.rename(columns={value_col: "value"}),
+                config,
+                run_paths,
+                tag=f"domain_{domain}",
+            )
+            tag = f"domain_{domain}"
+            models[str(tag)] = model
+    else:
+        model = _resolve_variogram_model(
+            df.rename(columns={value_col: "value"}),
+            config,
+            run_paths,
+            tag="global",
+        )
+        models["global"] = model
+    return {"models": models, "trend": trend_info}
 
 
 def run_anisotropy(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
@@ -190,7 +284,9 @@ def run_block_model(config: Dict[str, object], run_paths: RunPaths) -> Dict[str,
 
 def run_estimation_ok(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
     df, _metadata = _prepare_data(config)
-    model = _resolve_variogram_model(df, config, run_paths)
+    df, trend_model, trend_info = _apply_trend_if_needed(df, config, run_paths)
+    value_col = "residual" if trend_model else "value"
+    model = _resolve_variogram_model(df.rename(columns={value_col: "value"}), config, run_paths, tag="global")
     search = _build_search_params(config)
 
     grid_spec = run_block_model(config, run_paths)["grid_spec"]
@@ -222,7 +318,7 @@ def run_estimation_ok(config: Dict[str, object], run_paths: RunPaths) -> Dict[st
             "x",
             "y",
             "z",
-            "value",
+            value_col,
             (row["x"], row["y"], row["z"]),
             model,
             search,
@@ -231,14 +327,21 @@ def run_estimation_ok(config: Dict[str, object], run_paths: RunPaths) -> Dict[st
         rows.append({**row.to_dict(), **result})
 
     out = pd.DataFrame(rows)
+    if trend_model:
+        trend_vals = trend_model.predict(out)
+        out["trend"] = trend_vals
+        out["residual_estimate"] = out["estimate"]
+        out["estimate"] = out["estimate"] + out["trend"]
     save_table(out, run_paths, "kriging_estimates.csv", index=False)
     plot_xy_scatter(out, "x", "y", "estimate", str(run_paths.figure_path("kriging_estimate.png")))
-    return {"rows": int(len(out))}
+    return {"rows": int(len(out)), "trend": trend_info}
 
 
 def run_validation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
     df, _metadata = _prepare_data(config)
-    model = _resolve_variogram_model(df, config, run_paths)
+    df, trend_model, trend_info = _apply_trend_if_needed(df, config, run_paths)
+    value_col = "residual" if trend_model else "value"
+    model = _resolve_variogram_model(df.rename(columns={value_col: "value"}), config, run_paths, tag="global")
     search = _build_search_params(config)
     cv_cfg = config["validation"]
     cv_result = kriging_cross_validation(
@@ -246,20 +349,38 @@ def run_validation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, 
         "x",
         "y",
         "z",
-        "value",
+        value_col,
         model,
         search,
         method=cv_cfg["cv"],
         n_splits=cv_cfg["kfold_splits"],
     )
+    if trend_model:
+        trend_vals = trend_model.predict(cv_result.data)
+        cv_result.data["trend"] = trend_vals
+        cv_result.data["estimate"] = cv_result.data["estimate"] + trend_vals
     save_table(cv_result.data, run_paths, "validation_predictions.csv", index=False)
     save_table(pd.DataFrame([cv_result.metrics]), run_paths, "validation_metrics.csv", index=False)
 
     domain_col = "domain" if "domain" in df.columns else None
     if domain_col:
-        fig = plot_swath_panels(df, "x", "y", "value", domain_col, n_bins=cv_cfg["swath_bins"])
-        save_figure(fig, run_paths, "validation_swath.png")
-    return {"metrics": cv_result.metrics}
+        fig = plot_swath_comparison(
+            cv_result.data,
+            "x",
+            "y",
+            "value",
+            "estimate",
+            domain_col,
+            n_bins=cv_cfg["swath_bins"],
+        )
+        save_figure(fig, run_paths, "validation_swath_comparison.png")
+        domain_metrics = []
+        for domain, group in cv_result.data.groupby(domain_col, dropna=False):
+            metrics = compute_cv_metrics(group, vcol="value")
+            metrics["domain"] = domain
+            domain_metrics.append(metrics)
+        save_table(pd.DataFrame(domain_metrics), run_paths, "validation_metrics_by_domain.csv", index=False)
+    return {"metrics": cv_result.metrics, "trend": trend_info}
 
 
 def run_simulation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, object]:
@@ -269,10 +390,18 @@ def run_simulation(config: Dict[str, object], run_paths: RunPaths) -> Dict[str, 
     if not krig_path.exists():
         run_estimation_ok(config, run_paths)
     krig = pd.read_csv(krig_path)
+    df, _metadata = _prepare_data(config)
     rng = np.random.default_rng(int(config["simulation"]["random_seed"]))
     nreal = int(config["simulation"]["n_realizations"])
     std = np.sqrt(np.clip(krig["variance"].to_numpy(dtype=float), 0.0, None))
-    sims = rng.normal(loc=krig["estimate"].to_numpy()[:, None], scale=std[:, None], size=(len(krig), nreal))
+    estimates = krig["estimate"].to_numpy(dtype=float)
+    ns_cfg = config.get("transforms", {}).get("normal_score", {})
+    if ns_cfg.get("enabled"):
+        ns = normal_score_transform(df["value"])
+        estimates = ns.transform(estimates)
+    sims = rng.normal(loc=estimates[:, None], scale=std[:, None], size=(len(krig), nreal))
+    if ns_cfg.get("enabled"):
+        sims = ns.back_transform(sims.flatten()).reshape(sims.shape)
     summary = pd.DataFrame(
         {
             "x": krig["x"],

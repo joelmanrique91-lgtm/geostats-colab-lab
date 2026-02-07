@@ -10,11 +10,15 @@ logger = logging.getLogger(__name__)
 
 def resolve_support(df: pd.DataFrame, config: Dict[str, object]) -> Tuple[pd.DataFrame, str]:
     data_cfg = config["data"]
+    compositing_enabled = bool(config.get("compositing", {}).get("enabled", False))
     support = data_cfg["support"]
     allow_pseudo = bool(data_cfg.get("allow_pseudo_support", False))
     pseudo_len = data_cfg.get("pseudo_support_length")
 
     has_interval = {"from", "to"}.issubset(df.columns)
+
+    if compositing_enabled and support != "interval":
+        raise ValueError("Compositing requires interval support with explicit from/to columns.")
 
     if support == "interval":
         if has_interval:

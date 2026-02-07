@@ -197,3 +197,30 @@ def plot_swath_panels(
 
     fig.tight_layout()
     return fig
+
+
+def plot_swath_comparison(
+    df: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    actual_col: str,
+    estimate_col: str,
+    domain_col: str,
+    n_bins: int = 10,
+) -> plt.Figure:
+    df_axes = add_principal_axes(df, xcol, ycol)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    for ax, coord in zip(axes.flatten(), [xcol, ycol, "axis_major", "axis_minor"]):
+        actual = _swath_summary(df_axes, coord, actual_col, domain_col, n_bins)
+        estimate = _swath_summary(df_axes, coord, estimate_col, domain_col, n_bins)
+        for domain in sorted(df_axes[domain_col].dropna().unique().tolist()):
+            act_dom = actual[actual[domain_col] == domain]
+            est_dom = estimate[estimate[domain_col] == domain]
+            ax.plot(act_dom["center"], act_dom[actual_col], marker="o", label=f"{domain} datos")
+            ax.plot(est_dom["center"], est_dom[estimate_col], marker="x", linestyle="--", label=f"{domain} est")
+        ax.set_xlabel(coord)
+        ax.set_ylabel(actual_col)
+        ax.set_title(f"Swath {coord}")
+        ax.legend(fontsize=7, ncol=2)
+    fig.tight_layout()
+    return fig

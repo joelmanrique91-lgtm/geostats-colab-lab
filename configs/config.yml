@@ -1,0 +1,31 @@
+compositing:
+  bheid_col: BHID
+  from_col: FROM
+  to_col: TO
+  target_length: 2.0
+  min_length: 1.0
+  value_cols: []
+  output:
+    composites: outputs/tables/composites.csv
+    details: outputs/tables/compositing_details.csv
+    stats: outputs/tables/compositing_stats.csv
+
+declustering:
+  x_col: X
+  y_col: Y
+  z_col: Z
+  use_3d: false
+  cell_size:
+    x: 50.0
+    y: 50.0
+    z: 10.0
+  origin:
+    x:
+    y:
+    z:
+  value_cols:
+    - grade
+  weight_col: declust_weight
+  output:
+    weights: outputs/tables/declustering_weights.csv
+    stats: outputs/tables/declustering_stats.csv

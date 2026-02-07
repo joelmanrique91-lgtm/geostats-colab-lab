@@ -1,73 +1,68 @@
-# Geostats Workspace (Python + GeostatsPy)
+# geostats-colab-lab
 
-Este workspace contiene un pipeline reproducible para pasar de CSV de sondajes a EDA ? variograf?a ? grilla ? kriging ? validaci?n ? export.
+Repositorio “Colab-ready” para exploración geoestadística (EDA), variografía y análisis de anisotropía con datos de perforaciones. Incluye notebooks livianos y módulos reutilizables para cálculo y visualización, con un flujo pensado para Google Colab.
 
-## 1) Crear y activar entorno
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install geostatspy numpy pandas matplotlib scipy scikit-learn jupyter
-pip install ipywidgets
+## Propósito
+- Estandarizar un flujo reproducible de EDA geoestadístico.
+- Proveer funciones mínimas pero correctas para variografía omnidireccional y direccional.
+- Facilitar la generación posterior de módulos reutilizables (por ejemplo, por Codex).
+
+## Estructura del repositorio
+```
+.
+├─ data_sample/
+│  └─ sample_drillholes.csv
+├─ notebooks/
+│  ├─ 01_eda_geo.ipynb
+│  ├─ 02_variography.ipynb
+│  ├─ 03_anisotropy_analysis.ipynb
+│  └─ 04_block_model_support.ipynb
+├─ src/
+│  ├─ anisotropy.py
+│  ├─ eda_geo.py
+│  ├─ utils_spatial.py
+│  └─ variography.py
+├─ requirements.txt
+└─ README.md
 ```
 
-## 2) Datos
-- Copi? tus CSV a `csv/`.
-- Edit? `config/project.json` para mapear columnas.
-
-## 3) Configuraci?n principal
-Archivo: `config/project.json`
-- `data_csv_path`: ruta relativa al CSV.
-- `columns`: mapea columnas (x, y, z, variable_objetivo, domain).
-- `nodata_values`: valores a tratar como nulos.
-- `topcut`: activable si necesit?s capar outliers.
-- `grid`: permite auto desde extents (usa `dx,dy,dz`) o manual.
-- `variogram`: par?metros b?sicos del experimental.
-- `kriging`: radio de b?squeda y min/max samples.
-
-## 4) Notebooks (orden recomendado)
-1. `notebooks/00_setup_check.ipynb`
-2. `notebooks/01_eda.ipynb`
-3. `notebooks/02_variography.ipynb`
-4. `notebooks/03_grid_model.ipynb`
-5. `notebooks/04_kriging.ipynb`
-6. `notebooks/05_validation.ipynb`
-
-## 4.1) VS Code: seleccionar kernel correcto (.venv)
-Pasos:
-1. Abrí un notebook.
-2. Click en el selector de kernel (arriba a la derecha).
-3. Elegí `geostats (.venv)` (o el Python dentro de `.venv\Scripts\python.exe`).
-
-Si el kernelspec se pierde:
-```powershell
-.\.venv\Scripts\python -m ipykernel install --user --name geostats-venv --display-name "geostats (.venv)"
+## Quickstart en Google Colab
+1) Clonar el repo en `/content`:
+```bash
+git clone <repo_url> /content/geostats-colab-lab
+```
+2) Instalar dependencias:
+```bash
+pip install -r /content/geostats-colab-lab/requirements.txt
+```
+3) Agregar `src` al `sys.path`:
+```python
+import sys
+sys.path.append('/content/geostats-colab-lab/src')
+```
+4) Importar funciones de ejemplo:
+```python
+from eda_geo import basic_stats
+from variography import experimental_variogram
 ```
 
-## 5) Pipeline completo
-```powershell
-.\.venv\Scripts\activate
-python -m src.pipeline config/project.json
-```
-Si el pipeline falla con `ModuleNotFoundError: geostatspy`, casi seguro no activaste `.venv`.
+## Datos esperados
+Los notebooks y funciones asumen un `DataFrame` con columnas típicas:
+- `X`, `Y`, `Z`: coordenadas en metros.
+- `grade`: variable de ley (numérica).
+- `domain`: dominio o categoría geológica.
+- `lithology`: litología o descripción textual.
 
-Opcional (Windows):
-```powershell
-.\tools\run_pipeline.ps1
-```
+## Convenciones de código
+- Separar cálculos y plotting en funciones distintas.
+- Evitar rutas absolutas; usar rutas relativas al repo.
+- Documentar unidades (metros, grados, etc.).
+- Preferir funciones puras y testeables.
+- Mantener comentarios breves en español.
 
-## 6) Outputs
-Todo se guarda en `outputs/`:
-- `outputs/figures/`
-- `outputs/tables/`
-- `outputs/models/`
-- `outputs/logs/`
-
-## 7) Demo data
-Si no existe el CSV indicado, se genera `csv/demo_points.csv` autom?ticamente con `src/make_demo_data.py`.
-
----
-
-Notas:
-- No se usan ejecutables GSLIB.
-- GeostatsPy requiere `numba` y `tqdm` para algunas funciones; este proyecto incluye un shim interno para evitar instalar dependencias extra.
+## When generating code with Codex
+- Separar **cálculo** de **visualización** (plotting) en funciones distintas.
+- Devolver outputs numéricos además de gráficos (p. ej., `lags`, `gamma`, `npairs`).
+- Documentar unidades y supuestos en docstrings.
+- Priorizar funciones puras y testeables que no dependan del estado global.
+- Mantener dependencias razonables y compatibles con Colab.

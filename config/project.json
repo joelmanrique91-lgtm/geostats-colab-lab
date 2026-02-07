@@ -1,0 +1,45 @@
+{
+  "data_csv_path": "csv/Conminution.csv",
+  "columns": {
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "variable_objetivo": "Bwi_kWh_t",
+    "domain": "Lito",
+    "lithology": null,
+    "alteration": null
+  },
+  "nodata_values": ["", "NA", "NaN", -999, -99, -1.0e21],
+  "topcut": {"enabled": false, "high": null},
+  "decluster": {"enabled": false, "cell": 50.0},
+  "compositing": {"enabled": false, "length": 2.0, "alonghole_col": "BHID"},
+  "grid": {
+    "auto_from_data": true,
+    "pad": 0.0,
+    "nx": null,
+    "ny": null,
+    "nz": 1,
+    "xmin": null,
+    "ymin": null,
+    "zmin": null,
+    "dx": 25.0,
+    "dy": 25.0,
+    "dz": 5.0
+  },
+  "variogram": {
+    "nlag": 12,
+    "lag": 50.0,
+    "azm": 0.0,
+    "atol": 22.5,
+    "bandwh": 9999.0,
+    "dip": 0.0,
+    "dtol": 22.5,
+    "bandwd": 9999.0
+  },
+  "kriging": {
+    "type": "ok",
+    "search_radius": 150.0,
+    "min_samples": 4,
+    "max_samples": 16
+  }
+}

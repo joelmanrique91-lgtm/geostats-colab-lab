@@ -12,7 +12,11 @@ def apply_topcut(df: pd.DataFrame, col: str, high: float) -> pd.DataFrame:
     if col not in df.columns:
         raise KeyError(f"Column not found: {col}")
     df = df.copy()
-    df[col] = df[col].clip(upper=high)
+    df[f"{col}_raw"] = df[col]
+    df[f"{col}_capped"] = df[col].clip(upper=high)
+    df["cap_value"] = float(high)
+    df["capped_flag"] = df[col] > high
+    df[col] = df[f"{col}_capped"]
     return df
 
 

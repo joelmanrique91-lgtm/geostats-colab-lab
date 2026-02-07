@@ -18,6 +18,11 @@ qaqc:
     enabled: false
     zscore: 4.0
 
+topcut:
+  enabled: false
+  high: null
+  by_domain: false
+
 declustering:
   enabled: true
   cell_size:
@@ -25,6 +30,18 @@ declustering:
     y: 50.0
     z: 10.0
   use_3d: false
+
+trend:
+  enabled: auto
+  order: 1
+  r2_threshold: 0.2
+
+transforms:
+  normal_score:
+    enabled: false
+  indicators:
+    enabled: false
+    thresholds: []
 
 compositing:
   enabled: false

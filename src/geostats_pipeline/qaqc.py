@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 
@@ -53,6 +54,33 @@ def outlier_report(df: pd.DataFrame, value_col: str, zscore: float = 4.0) -> pd.
     out = df.loc[mask, [value_col]].copy()
     out["zscore"] = z[mask]
     return out
+
+
+def apply_topcut(
+    df: pd.DataFrame,
+    value_col: str,
+    high: float,
+    domain_col: str | None = None,
+) -> pd.DataFrame:
+    if value_col not in df.columns:
+        raise KeyError(f"Column not found: {value_col}")
+    if high is None:
+        return df.copy()
+    work = df.copy()
+    work["value_raw"] = pd.to_numeric(work[value_col], errors="coerce")
+    work["cap_value"] = float(high)
+    if domain_col and domain_col in work.columns:
+        capped = []
+        for _, group in work.groupby(domain_col, dropna=False):
+            values = group["value_raw"].to_numpy(dtype=float)
+            capped_vals = np.clip(values, a_min=None, a_max=high)
+            capped.append(pd.Series(capped_vals, index=group.index))
+        work["value_capped"] = pd.concat(capped).sort_index()
+    else:
+        work["value_capped"] = work["value_raw"].clip(upper=high)
+    work["capped_flag"] = work["value_raw"] > high
+    work[value_col] = work["value_capped"]
+    return work
 
 
 def _missing_columns(df: pd.DataFrame, cols: Iterable[str]) -> List[str]:
